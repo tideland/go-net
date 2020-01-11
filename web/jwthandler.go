@@ -129,18 +129,27 @@ func (jw *JWTHandler) deny(w http.ResponseWriter, r *http.Request, msg string, s
 	switch {
 	case httpx.ContainsContentType(r.Header, httpx.ContentTypeJSON):
 		b, _ := json.Marshal(feedback)
-		w.WriteHeader(statusCode)
 		w.Header().Set(httpx.HeaderContentType, httpx.ContentTypeJSON)
-		w.Write(b)
+		if _, err := w.Write(b); err != nil {
+			w.WriteHeader(http.StatusInternalServerError)
+			return
+		}
+		w.WriteHeader(statusCode)
 	case httpx.ContainsContentType(r.Header, httpx.ContentTypeXML):
 		b, _ := xml.Marshal(feedback)
-		w.WriteHeader(statusCode)
 		w.Header().Set(httpx.HeaderContentType, httpx.ContentTypeXML)
-		w.Write(b)
-	default:
+		if _, err := w.Write(b); err != nil {
+			w.WriteHeader(http.StatusInternalServerError)
+			return
+		}
 		w.WriteHeader(statusCode)
+	default:
 		w.Header().Set(httpx.HeaderContentType, httpx.ContentTypePlain)
-		w.Write([]byte(msg))
+		if _, err := w.Write([]byte(msg)); err != nil {
+			w.WriteHeader(http.StatusInternalServerError)
+			return
+		}
+		w.WriteHeader(statusCode)
 	}
 }
 

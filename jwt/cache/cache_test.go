@@ -56,7 +56,7 @@ func TestCacheAccessCleanup(t *testing.T) {
 	assert.Logf("testing cache access based cleanup")
 	ctx := context.Background()
 	cache := cache.New(ctx, time.Second, time.Second, time.Second, 10)
-	defer cache.Stop()
+	defer assert.NoError(cache.Stop())
 	key := []byte("secret")
 	claims := initClaims()
 	jwtIn, err := token.Encode(claims, key, token.HS512)
@@ -80,7 +80,7 @@ func TestCacheValidityCleanup(t *testing.T) {
 	assert.Logf("testing cache validity based cleanup")
 	ctx := context.Background()
 	cache := cache.New(ctx, time.Minute, time.Second, time.Second, 10)
-	defer cache.Stop()
+	defer assert.NoError(cache.Stop())
 	key := []byte("secret")
 	now := time.Now()
 	nbf := now.Add(-2 * time.Second)
@@ -116,7 +116,7 @@ func TestCacheLoad(t *testing.T) {
 	cacheTime := 100 * time.Millisecond
 	ctx := context.Background()
 	cache := cache.New(ctx, 2*cacheTime, cacheTime, cacheTime, 4)
-	defer cache.Stop()
+	defer assert.NoError(cache.Stop())
 	claims := initClaims()
 	// Now fill the cache and check that it doesn't
 	// grow too high.

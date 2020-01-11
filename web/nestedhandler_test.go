@@ -62,7 +62,8 @@ func TestNestedHandler(t *testing.T) {
 		}
 		w.WriteHeader(http.StatusOK)
 		w.Header().Add(environments.HeaderContentType, environments.ContentTypePlain)
-		w.Write([]byte(reply))
+		_, err := w.Write([]byte(reply))
+		assert.NoError(err)
 	})
 	nh.AppendHandlerFunc("bar", func(w http.ResponseWriter, r *http.Request) {
 		reply := ""
@@ -74,7 +75,8 @@ func TestNestedHandler(t *testing.T) {
 		}
 		w.WriteHeader(http.StatusOK)
 		w.Header().Add(environments.HeaderContentType, environments.ContentTypePlain)
-		w.Write([]byte(reply))
+		_, err := w.Write([]byte(reply))
+		assert.NoError(err)
 	})
 
 	wa.Handle("/foo/", nh)

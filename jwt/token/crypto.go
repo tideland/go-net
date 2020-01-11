@@ -151,7 +151,9 @@ func (a Algorithm) signHMAC(data, key []byte, h crypto.Hash) (Signature, error) 
 		return nil, failure.New("invalid combination of algorithm '%s' and key type '%s'", a, "HMAC")
 	}
 	hasher := hmac.New(h.New, key)
-	hasher.Write(data)
+	if _, err := hasher.Write(data); err != nil {
+		return nil, err
+	}
 	sig := hasher.Sum(nil)
 	return Signature(sig), nil
 }
@@ -269,7 +271,9 @@ func (a Algorithm) verifyRSA(data []byte, sig Signature, key *rsa.PublicKey, h c
 // hashSum determines the hash sum of the passed data.
 func hashSum(data []byte, h crypto.Hash) []byte {
 	hasher := h.New()
-	hasher.Write(data)
+	if _, err := hasher.Write(data); err != nil {
+		panic(err)
+	}
 	return hasher.Sum(nil)
 }
 

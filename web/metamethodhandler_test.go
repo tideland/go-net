@@ -104,9 +104,12 @@ type mmHandler struct{}
 
 func (h mmHandler) ServeHTTPPut(w http.ResponseWriter, r *http.Request) {
 	reply := "METHOD: " + r.Method + "!"
-	w.WriteHeader(http.StatusOK)
 	w.Header().Add(environments.HeaderContentType, environments.ContentTypePlain)
-	w.Write([]byte(reply))
+	if _, err := w.Write([]byte(reply)); err != nil {
+		w.WriteHeader(http.StatusInternalServerError)
+		return
+	}
+	w.WriteHeader(http.StatusOK)
 }
 
 func (h mmHandler) ServeHTTPDelete(w http.ResponseWriter, r *http.Request) {
