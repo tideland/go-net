@@ -15,17 +15,15 @@ import (
 	"context"
 	"net/http"
 	"strings"
-	"sync"
 	"time"
 
 	"tideland.dev/go/net/jwt/token"
-	"tideland.dev/go/together/loop"
-	"tideland.dev/go/together/notifier"
 	"tideland.dev/go/trace/failure"
+	"tideland.dev/go/trace/logger"
 )
 
 //--------------------
-// CACHE
+// CACHE ENTRY
 //--------------------
 
 // cacheEntry manages a token and its access time.
@@ -34,17 +32,23 @@ type cacheEntry struct {
 	accessed time.Time
 }
 
+//--------------------
+// CACHE
+//--------------------
+
+// defaultTimeout is the default timeout for synchronous actions.
+const defaultTimeout = 5 * time.Second
+
 // Cache provides a caching for tokens so that these
 // don't have to be decoded or verified multiple times.
 type Cache struct {
-	mu         sync.Mutex
+	ctx        context.Context
 	entries    map[string]*cacheEntry
 	ttl        time.Duration
 	leeway     time.Duration
 	interval   time.Duration
 	maxEntries int
-	cleanupc   chan time.Duration
-	loop       *loop.Loop
+	actionc    chan func()
 }
 
 // New creates a new JWT caching. The ttl value controls
@@ -56,116 +60,121 @@ type Cache struct {
 // ttl will be temporarily reduced for cleanup.
 func New(ctx context.Context, ttl, leeway, interval time.Duration, maxEntries int) *Cache {
 	c := &Cache{
+		ctx:        ctx,
 		entries:    map[string]*cacheEntry{},
 		ttl:        ttl,
 		leeway:     leeway,
 		interval:   interval,
 		maxEntries: maxEntries,
-		cleanupc:   make(chan time.Duration, 5),
+		actionc:    make(chan func(), 1),
 	}
-	options := []loop.Option{loop.WithFinalizer(c.finalize)}
-	if ctx != nil {
-		options = append(options, loop.WithContext(ctx))
-	}
-	l, err := loop.Go(c.worker, options...)
-	if err != nil {
-		panic("new JWT cache: " + err.Error())
-	}
-	c.loop = l
+	go c.backend()
 	return c
 }
 
 // Get tries to retrieve a token from the cache.
-func (c *Cache) Get(token string) (*token.JWT, bool) {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-	if c.entries == nil {
-		return nil, false
-	}
-	entry, ok := c.entries[token]
-	if !ok {
-		return nil, false
-	}
-	if entry.jwt.IsValid(c.leeway) {
+func (c *Cache) Get(st string) (*token.JWT, error) {
+	var jwt *token.JWT
+	aerr := c.doSync(func() {
+		if c.entries == nil {
+			return
+		}
+		entry, ok := c.entries[st]
+		if !ok {
+			return
+		}
+		if !entry.jwt.IsValid(c.leeway) {
+			// Remove invalid token.
+			delete(c.entries, st)
+		}
 		entry.accessed = time.Now()
-		return entry.jwt, true
+		jwt = entry.jwt
+	}, defaultTimeout)
+	if aerr != nil {
+		return nil, aerr
 	}
-	// Remove invalid token.
-	delete(c.entries, token)
-	return nil, false
+	return jwt, nil
 }
 
 // RequestDecode tries to retrieve a token from the cache by
 // the requests authorization header. Otherwise it decodes it and
 // puts it.
 func (c *Cache) RequestDecode(req *http.Request) (*token.JWT, error) {
-	t, err := c.requestToken(req)
-	if err != nil {
-		return nil, err
+	var jwt *token.JWT
+	var err error
+	aerr := c.doSync(func() {
+		var st string
+		if st, err = c.requestToken(req); err != nil {
+			return
+		}
+		if jwt, err = c.Get(st); err != nil {
+			return
+		}
+		if jwt, err = token.Decode(st); err != nil {
+			return
+		}
+		_, err = c.Put(jwt)
+	}, defaultTimeout)
+	if aerr != nil {
+		return nil, aerr
 	}
-	jwt, ok := c.Get(t)
-	if ok {
-		return jwt, nil
-	}
-	jwt, err = token.Decode(t)
-	if err != nil {
-		return nil, err
-	}
-	c.Put(jwt)
-	return jwt, nil
+	return jwt, err
 }
 
 // RequestVerify tries to retrieve a token from the cache by
 // the requests authorization header. Otherwise it verifies it and
 // puts it.
 func (c *Cache) RequestVerify(req *http.Request, key token.Key) (*token.JWT, error) {
-	t, err := c.requestToken(req)
-	if err != nil {
-		return nil, err
+	var jwt *token.JWT
+	var err error
+	aerr := c.doSync(func() {
+		var st string
+		if st, err = c.requestToken(req); err != nil {
+			return
+		}
+		if jwt, err = c.Get(st); err != nil {
+			return
+		}
+		if jwt, err = token.Verify(st, key); err != nil {
+			return
+		}
+		_, err = c.Put(jwt)
+	}, defaultTimeout)
+	if aerr != nil {
+		return nil, aerr
 	}
-	jwt, ok := c.Get(t)
-	if ok {
-		return jwt, nil
-	}
-	jwt, err = token.Verify(t, key)
-	if err != nil {
-		return nil, err
-	}
-	c.Put(jwt)
-	return jwt, nil
+	return jwt, err
 }
 
 // Put adds a token to the cache and return the total number of entries.
-func (c *Cache) Put(jwt *token.JWT) int {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-	if c.entries == nil {
-		return 0
-	}
-	if jwt.IsValid(c.leeway) {
-		c.entries[jwt.String()] = &cacheEntry{jwt, time.Now()}
-		lenEntries := len(c.entries)
-		if lenEntries > c.maxEntries {
-			ttl := int64(c.ttl) / int64(lenEntries) * int64(c.maxEntries)
-			c.cleanupc <- time.Duration(ttl)
+func (c *Cache) Put(jwt *token.JWT) (int, error) {
+	var l int
+	err := c.doSync(func() {
+		if c.entries == nil {
+			l = 0
+			return
 		}
-	}
-	return len(c.entries)
+		if jwt.IsValid(c.leeway) {
+			c.entries[jwt.String()] = &cacheEntry{jwt, time.Now()}
+			lenEntries := len(c.entries)
+			if lenEntries > c.maxEntries {
+				ttl := int64(c.ttl) / int64(lenEntries) * int64(c.maxEntries)
+				c.cleanup(time.Duration(ttl))
+			}
+		}
+		l = len(c.entries)
+	}, defaultTimeout)
+	return l, err
 }
 
 // Cleanup manually tells the cache to cleanup.
-func (c *Cache) Cleanup() {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-	if c.entries == nil {
-		return
-	}
-	c.cleanupc <- c.ttl
-}
-
-// Stop tells the cache to end working.
-func (c *Cache) Stop() error {
-	return c.loop.Stop(nil)
+func (c *Cache) Cleanup() error {
+	return c.doSync(func() {
+		if c.entries == nil {
+			return
+		}
+		c.cleanup(c.ttl)
+	}, defaultTimeout)
 }
 
 // requestToken retrieves an authentication token out of a request.
@@ -181,38 +190,8 @@ func (c *Cache) requestToken(req *http.Request) (string, error) {
 	return fields[1], nil
 }
 
-// worker runs a cleaning session every five minutes.
-func (c *Cache) worker(nc *notifier.Closer) error {
-	defer func() {
-		// Cleanup entries map after stop or error.
-		c.mu.Lock()
-		defer c.mu.Unlock()
-		c.entries = nil
-	}()
-	ticker := time.NewTicker(c.interval)
-	defer ticker.Stop()
-	for {
-		select {
-		case <-nc.Done():
-			return nil
-		case ttl := <-c.cleanupc:
-			c.cleanup(ttl)
-		case <-ticker.C:
-			c.cleanup(c.ttl)
-		}
-	}
-}
-
-// finalizer cleans the data when the loop ends.
-func (c *Cache) finalize(err error) error {
-	c.entries = map[string]*cacheEntry{}
-	return err
-}
-
 // cleanup checks for invalid or unused tokens.
 func (c *Cache) cleanup(ttl time.Duration) {
-	c.mu.Lock()
-	defer c.mu.Unlock()
 	valids := map[string]*cacheEntry{}
 	now := time.Now()
 	for token, entry := range c.entries {
@@ -224,6 +203,42 @@ func (c *Cache) cleanup(ttl time.Duration) {
 		}
 	}
 	c.entries = valids
+}
+
+// doSync performs a function in the backend synchronously.
+func (c *Cache) doSync(action func(), timeout time.Duration) error {
+	donec := make(chan struct{})
+	c.actionc <- func() {
+		action()
+		close(donec)
+	}
+	select {
+	case <-donec:
+		return nil
+	case <-time.After(timeout):
+		return failure.New("cache action timeout")
+	}
+}
+
+// backend is the goroutine of the cache.
+func (c *Cache) backend() {
+	ticker := time.NewTicker(c.interval)
+	for {
+		select {
+		case <-c.ctx.Done():
+			c.entries = map[string]*cacheEntry{}
+			ticker.Stop()
+			return
+		case action := <-c.actionc:
+			action()
+		case <-ticker.C:
+			go func() {
+				if err := c.Cleanup(); err != nil {
+					logger.Errorf("JWT cache: %v", err)
+				}
+			}()
+		}
+	}
 }
 
 // EOF

@@ -21,6 +21,7 @@ import (
 	"tideland.dev/go/net/httpx"
 	"tideland.dev/go/net/jwt/cache"
 	"tideland.dev/go/net/jwt/token"
+	"tideland.dev/go/trace/logger"
 )
 
 //--------------------
@@ -130,26 +131,26 @@ func (jw *JWTHandler) deny(w http.ResponseWriter, r *http.Request, msg string, s
 	case httpx.ContainsContentType(r.Header, httpx.ContentTypeJSON):
 		b, _ := json.Marshal(feedback)
 		w.Header().Set(httpx.HeaderContentType, httpx.ContentTypeJSON)
+		w.WriteHeader(statusCode)
 		if _, err := w.Write(b); err != nil {
-			w.WriteHeader(http.StatusInternalServerError)
+			logger.Errorf("JWT handler: %v", err)
 			return
 		}
-		w.WriteHeader(statusCode)
 	case httpx.ContainsContentType(r.Header, httpx.ContentTypeXML):
 		b, _ := xml.Marshal(feedback)
 		w.Header().Set(httpx.HeaderContentType, httpx.ContentTypeXML)
+		w.WriteHeader(statusCode)
 		if _, err := w.Write(b); err != nil {
-			w.WriteHeader(http.StatusInternalServerError)
+			logger.Errorf("JWT handler: %v", err)
 			return
 		}
-		w.WriteHeader(statusCode)
 	default:
 		w.Header().Set(httpx.HeaderContentType, httpx.ContentTypePlain)
+		w.WriteHeader(statusCode)
 		if _, err := w.Write([]byte(msg)); err != nil {
-			w.WriteHeader(http.StatusInternalServerError)
+			logger.Errorf("JWT handler: %v", err)
 			return
 		}
-		w.WriteHeader(statusCode)
 	}
 }
 

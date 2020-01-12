@@ -37,16 +37,15 @@ func TestCachePutGet(t *testing.T) {
 	claims := initClaims()
 	jwtIn, err := token.Encode(claims, key, token.HS512)
 	assert.Nil(err)
-	cache.Put(jwtIn)
+	_, err = cache.Put(jwtIn)
+	assert.NoError(err)
 	token := jwtIn.String()
-	jwtOut, ok := cache.Get(token)
-	assert.True(ok)
+	jwtOut, err := cache.Get(token)
+	assert.NoError(err)
 	assert.Equal(jwtIn, jwtOut)
-	jwtOut, ok = cache.Get("is.not.there")
-	assert.False(ok)
+	jwtOut, err = cache.Get("is.not.there")
+	assert.NoError(err)
 	assert.Nil(jwtOut)
-	err = cache.Stop()
-	assert.Nil(err)
 }
 
 // TestCacheAccessCleanup tests the access based cleanup
@@ -56,20 +55,20 @@ func TestCacheAccessCleanup(t *testing.T) {
 	assert.Logf("testing cache access based cleanup")
 	ctx := context.Background()
 	cache := cache.New(ctx, time.Second, time.Second, time.Second, 10)
-	defer assert.NoError(cache.Stop())
 	key := []byte("secret")
 	claims := initClaims()
 	jwtIn, err := token.Encode(claims, key, token.HS512)
-	assert.Nil(err)
-	cache.Put(jwtIn)
+	assert.NoError(err)
+	_, err = cache.Put(jwtIn)
+	assert.NoError(err)
 	token := jwtIn.String()
-	jwtOut, ok := cache.Get(token)
-	assert.True(ok)
+	jwtOut, err := cache.Get(token)
+	assert.NoError(err)
 	assert.Equal(jwtIn, jwtOut)
 	// Now wait a bit an try again.
 	time.Sleep(5 * time.Second)
-	jwtOut, ok = cache.Get(token)
-	assert.False(ok)
+	jwtOut, err = cache.Get(token)
+	assert.NoError(err)
 	assert.Nil(jwtOut)
 }
 
@@ -80,7 +79,6 @@ func TestCacheValidityCleanup(t *testing.T) {
 	assert.Logf("testing cache validity based cleanup")
 	ctx := context.Background()
 	cache := cache.New(ctx, time.Minute, time.Second, time.Second, 10)
-	defer assert.NoError(cache.Stop())
 	key := []byte("secret")
 	now := time.Now()
 	nbf := now.Add(-2 * time.Second)
@@ -90,21 +88,23 @@ func TestCacheValidityCleanup(t *testing.T) {
 	claims.SetExpiration(exp)
 	jwtIn, err := token.Encode(claims, key, token.HS512)
 	assert.Nil(err)
-	cache.Put(jwtIn)
+	_, err = cache.Put(jwtIn)
+	assert.NoError(err)
 	token := jwtIn.String()
-	jwtOut, ok := cache.Get(token)
-	assert.True(ok)
-	assert.Equal(jwtIn, jwtOut)
+	jwtOut, err := cache.Get(token)
+	assert.NoError(err)
+	assert.Equal(jwtOut, jwtIn)
 	// Now access until it is invalid and not
 	// available anymore.
 	var i int
 	for i = 0; i < 5; i++ {
 		time.Sleep(time.Second)
-		jwtOut, ok = cache.Get(token)
-		if !ok {
+		jwtOut, err = cache.Get(token)
+		assert.NoError(err)
+		if jwtOut == nil {
 			break
 		}
-		assert.Equal(jwtIn, jwtOut)
+		assert.Equal(jwtOut, jwtIn)
 	}
 	assert.True(i > 1 && i < 4)
 }
@@ -116,7 +116,6 @@ func TestCacheLoad(t *testing.T) {
 	cacheTime := 100 * time.Millisecond
 	ctx := context.Background()
 	cache := cache.New(ctx, 2*cacheTime, cacheTime, cacheTime, 4)
-	defer assert.NoError(cache.Stop())
 	claims := initClaims()
 	// Now fill the cache and check that it doesn't
 	// grow too high.
@@ -126,7 +125,8 @@ func TestCacheLoad(t *testing.T) {
 		key := []byte(fmt.Sprintf("secret-%d", i))
 		jwtIn, err := token.Encode(claims, key, token.HS512)
 		assert.Nil(err)
-		size := cache.Put(jwtIn)
+		size, err := cache.Put(jwtIn)
+		assert.NoError(err)
 		assert.True(size < 6)
 	}
 }
@@ -140,17 +140,16 @@ func TestCacheContext(t *testing.T) {
 	key := []byte("secret")
 	claims := initClaims()
 	jwtIn, err := token.Encode(claims, key, token.HS512)
-	assert.Nil(err)
-	cache.Put(jwtIn)
+	assert.NoError(err)
+	_, err = cache.Put(jwtIn)
+	assert.NoError(err)
 	// Now cancel and test to get token.
 	cancel()
 	time.Sleep(10 * time.Millisecond)
 	token := jwtIn.String()
-	jwtOut, ok := cache.Get(token)
-	assert.False(ok)
+	jwtOut, err := cache.Get(token)
+	assert.ErrorMatch(err, ".* cache action timeout")
 	assert.Nil(jwtOut)
-	err = cache.Stop()
-	assert.NoError(err)
 }
 
 //--------------------
